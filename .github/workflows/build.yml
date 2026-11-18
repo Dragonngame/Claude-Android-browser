@@ -31,9 +31,7 @@ jobs:
         run: gradle assembleDebug --no-daemon --stacktrace
 
       - name: Check APK contents
-        run: unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -iE "\.so" || true
-          unzip -l app/build/libs/*.jar 2>/dev/null | head -0 || true
-          ls -la app/build/ngrok app/build/ngrok/jniLibs/arm64-v8a || true
+        run: unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -E "\.so$" || true
 
       - name: Publish APK as a release
         uses: softprops/action-gh-release@v2
