@@ -49,9 +49,38 @@ android {
     }
 }
 
+// ngrok built into the app.
+// The native jar keeps its .so as a Java resource, which Android drops, so it is split here:
+// classes go into a jar (without com.ngrok.Runtime, replaced by app/src/main/java/com/ngrok/Runtime.java)
+// and the .so goes into lib/arm64-v8a.
+val ngrokNative: Configuration by configurations.creating
+
+val ngrokNativeJar by tasks.registering(Jar::class) {
+    archiveFileName.set("ngrok-native-classes.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("ngrok"))
+    from({ ngrokNative.map { zipTree(it) } }) {
+        exclude("com/ngrok/Runtime.class", "com/ngrok/Runtime$*.class", "*.so", "META-INF/MANIFEST.MF")
+    }
+}
+
+val ngrokJniLibs by tasks.registering(Copy::class) {
+    from({ ngrokNative.map { zipTree(it) } }) {
+        include("*.so")
+    }
+    into(layout.buildDirectory.dir("ngrok/jniLibs/arm64-v8a"))
+}
+
+android.sourceSets.getByName("main").jniLibs.srcDir(layout.buildDirectory.dir("ngrok/jniLibs"))
+
+tasks.named("preBuild") {
+    dependsOn(ngrokJniLibs)
+}
+
 dependencies {
-    // ngrok built into the app (Android arm64 native library).
     implementation("com.ngrok:ngrok-java:1.1.1")
-    implementation("com.ngrok:ngrok-java-native:1.1.1:linux-android-aarch_64")
+    ngrokNative("com.ngrok:ngrok-java-native:1.1.1:linux-android-aarch_64") {
+        isTransitive = false
+    }
+    implementation(files(ngrokNativeJar))
     implementation("org.slf4j:slf4j-nop:2.0.16")
 }
