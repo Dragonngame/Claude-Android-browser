@@ -168,6 +168,13 @@ class MainActivity : Activity() {
         return "https://$d/${secret()}/mcp"
     }
 
+    private fun appVersion(): String =
+        try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+        } catch (e: Exception) {
+            "?"
+        }
+
     private fun token(): String = prefs.getString("token", "") ?: ""
 
     private fun updateStatus() {
@@ -209,7 +216,7 @@ class MainActivity : Activity() {
 
     private fun showSettings() {
         AlertDialog.Builder(this)
-            .setTitle("Setup")
+            .setTitle("Setup (v" + appVersion() + ")")
             .setMessage(
                 "Connector URL for Claude:\n\n${connectorUrl()}\n\n" +
                     "ngrok token: " + (if (token().isEmpty()) "not set" else "set") + "\n" +

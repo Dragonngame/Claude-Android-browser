@@ -11,8 +11,10 @@ android {
         applicationId = "com.remotebrowser.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1"
+        // Build number comes from GitHub Actions (-PbuildNumber=N), so every APK has its own version.
+        val buildNumber = (project.findProperty("buildNumber") as String?)?.toIntOrNull() ?: 1
+        versionCode = buildNumber
+        versionName = "1.$buildNumber"
     }
 
     // Fixed signing key, so new builds install over old ones without losing logins.
