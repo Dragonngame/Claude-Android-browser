@@ -70,6 +70,34 @@ val ngrokJniLibs by tasks.registering(Copy::class) {
         include("*.so")
     }
     into(layout.buildDirectory.dir("ngrok/jniLibs/arm64-v8a"))
+    // ngrok-java 1.1.1's Android library returns JNI_VERSION_1_8 from JNI_OnLoad, which Android rejects
+    // (it only accepts 1.2, 1.4 and 1.6). Patch "mov w0, #8" to "mov w0, #6" so it returns JNI_VERSION_1_6.
+    doLast {
+        val f = destinationDir.resolve("libngrok_java.so")
+        val b = f.readBytes()
+        val find = listOf(0x00, 0x01, 0x80, 0x52, 0x20, 0x00, 0xa0, 0x72, 0xfe, 0x07, 0x41, 0xf8, 0xc0, 0x03, 0x5f, 0xd6)
+            .map { it.toByte() }.toByteArray()
+        var at = -1
+        var count = 0
+        for (i in 0..b.size - find.size) {
+            var ok = true
+            for (j in find.indices) {
+                if (b[i + j] != find[j]) {
+                    ok = false
+                    break
+                }
+            }
+            if (ok) {
+                at = i
+                count++
+            }
+        }
+        if (count != 1) throw GradleException("JNI version patch: expected 1 match, found $count")
+        b[at] = 0xc0.toByte()
+        b[at + 1] = 0x00
+        f.writeBytes(b)
+        println("Patched JNI_OnLoad to return JNI_VERSION_1_6")
+    }
 }
 
 android.sourceSets.getByName("main").jniLibs.srcDir(layout.buildDirectory.dir("ngrok/jniLibs"))
