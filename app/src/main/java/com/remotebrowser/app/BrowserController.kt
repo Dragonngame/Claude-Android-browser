@@ -624,6 +624,23 @@ class BrowserController(private val act: MainActivity) {
                 if (i > 0) Thread.sleep(2000)
                 t = jsObj("(function(){return JSON.stringify({t:window.__cbV.currentTime});})()").optDouble("t", 0.0)
             }
+            // Best: copy the frame straight from the video element (works even in background mode,
+            // where Android's separate video layer doesn't show up in screen captures).
+            val direct = jsObj(
+                "(function(){var v=window.__cbV;var w=Math.min(480,v.videoWidth||480);" +
+                    "var h=Math.round(w*(v.videoHeight||270)/(v.videoWidth||480));" +
+                    "var c=document.createElement('canvas');c.width=w;c.height=h;" +
+                    "try{c.getContext('2d').drawImage(v,0,0,w,h);return JSON.stringify({d:c.toDataURL('image/jpeg',0.72)});}" +
+                    "catch(e){return JSON.stringify({err:String(e)});}})()"
+            )
+            val durl = direct.optString("d")
+            if (durl.startsWith("data:image/jpeg;base64,")) {
+                frames.add(durl.substringAfter(","))
+                val sec = t.roundToInt()
+                sb.append("Frame ${i + 1}: at ${sec / 60}:${String.format("%02d", sec % 60)}\n")
+                continue
+            }
+            // Fallback (protected videos): screen capture cropped to the video.
             val pos = jsObj(VIDEO_JS)
             val bmp = captureBitmap()
             val ratio = bmp.width / pos.optDouble("vw", bmp.width.toDouble())
