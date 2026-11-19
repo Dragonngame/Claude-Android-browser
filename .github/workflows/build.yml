@@ -41,3 +41,4 @@ jobs:
           tag_name: v1.${{ github.run_number }}
           name: Remote Browser v1.${{ github.run_number }}
           files: RemoteBrowser-v1.${{ github.run_number }}.apk
+          body_path: RELEASE_NOTES.md

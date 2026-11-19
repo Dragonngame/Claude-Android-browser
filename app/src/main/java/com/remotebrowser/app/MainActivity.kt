@@ -13,6 +13,14 @@ import android.net.Uri
 import android.provider.Settings
 import android.view.Gravity
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
+import android.webkit.WebResourceResponse
+import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
@@ -42,6 +50,16 @@ class MainActivity : Activity() {
     private lateinit var statusView: TextView
     private lateinit var logView: TextView
     private var server: McpServer? = null
+    private var controller: BrowserController? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var askingSomething = false
+    private val stateListener: () -> Unit = { runOnUiThread { updateStatus() } }
+    private val idleCheck = object : Runnable {
+        override fun run() {
+            controller?.idleTick()
+            mainHandler.postDelayed(this, 20_000)
+        }
+    }
     private var tunnel: Tunnel? = null
     @Volatile private var tunnelStatus = "Tunnel: off"
 
@@ -52,8 +70,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Screen stays on while the app is open, so Claude can keep using it.
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        AppState.init(this)
 
         val pad = (8 * resources.displayMetrics.density).toInt()
         val match = ViewGroup.LayoutParams.MATCH_PARENT
@@ -107,10 +124,9 @@ class MainActivity : Activity() {
         startServer()
         startKeepAlive()
         startTunnel()
-        if (!Settings.canDrawOverlays(this) && !prefs.getBoolean("askedOverlay", false)) {
-            prefs.edit().putBoolean("askedOverlay", true).apply()
-            askOverlayPermission()
-        }
+        AppState.addListener(stateListener)
+        mainHandler.postDelayed(idleCheck, 20_000)
+        checkForUpdate()
         webView.loadUrl("https://www.google.com")
     }
 
@@ -137,6 +153,13 @@ class MainActivity : Activity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 loading = false
                 if (!urlBar.hasFocus()) urlBar.setText(url ?: "")
+            }
+
+            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                if (AdBlock.isBlocked(request?.url?.host)) {
+                    return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+                }
+                return null
             }
 
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
@@ -188,7 +211,9 @@ class MainActivity : Activity() {
     private fun token(): String = prefs.getString("token", "") ?: ""
 
     private fun updateStatus() {
-        statusView.text = if (token().isEmpty() || domain().isEmpty()) {
+        statusView.text = if (AppState.paused) {
+            "Paused: Claude can't use the browser. Setup > More > Resume, or use the notification."
+        } else if (token().isEmpty() || domain().isEmpty()) {
             "Tap Setup and enter your ngrok token and domain."
         } else {
             tunnelStatus
@@ -245,16 +270,24 @@ class MainActivity : Activity() {
     private fun showMore() {
         AlertDialog.Builder(this)
             .setTitle("More")
-            .setItems(arrayOf("Make a new secret key", "Restart tunnel", "Stop and close the app", "Allow background mode (display over other apps)")) { _, which ->
+            .setItems(arrayOf(
+                    if (AppState.paused) "Resume Claude" else "Pause Claude",
+                    "Make a new secret key", "Restart tunnel", "Stop and close the app",
+                    "Allow background mode (display over other apps)", "Battery settings for this app",
+                    "Check for updates"
+                )) { _, which ->
                 when (which) {
-                    0 -> {
+                    0 -> AppState.setPaused(!AppState.paused)
+                    1 -> {
                         prefs.edit().remove("secret").apply()
                         secret()
                         Toast.makeText(this, "New key made. Update the connector URL in Claude.", Toast.LENGTH_LONG).show()
                     }
-                    1 -> startTunnel()
-                    2 -> finishAndRemoveTask()
-                    3 -> askOverlayPermission()
+                    2 -> startTunnel()
+                    3 -> finishAndRemoveTask()
+                    4 -> askOverlayPermission()
+                    5 -> askBatteryExemption()
+                    6 -> checkForUpdate(true)
                 }
             }
             .show()
@@ -297,8 +330,9 @@ class MainActivity : Activity() {
     }
 
     private fun startServer() {
-        val controller = BrowserController(this)
-        val handler = McpHandler(controller) { msg -> runOnUiThread { logView.text = "Claude: $msg" } }
+        val c = BrowserController(this)
+        controller = c
+        val handler = McpHandler(c) { msg -> runOnUiThread { logView.text = "Claude: $msg" } }
         val s = McpServer(PORT, { secret() }, handler) { err -> runOnUiThread { statusView.text = err } }
         s.start()
         server = s
@@ -317,7 +351,83 @@ class MainActivity : Activity() {
                 startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
             }
             .setNegativeButton("Not now", null)
+            .setOnDismissListener { askingSomething = false }
             .show()
+    }
+
+    private fun batteryExempt(): Boolean =
+        (getSystemService(Context.POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(packageName)
+
+    private fun askBatteryExemption() {
+        askingSomething = true
+        AlertDialog.Builder(this)
+            .setTitle("Battery")
+            .setMessage(
+                "The app lets your phone sleep and only wakes up when Claude needs it. " +
+                    "To make sure Android doesn't cut its connection while the screen is off, " +
+                    "allow it to run without battery restrictions."
+            )
+            .setPositiveButton("Allow") { _, _ ->
+                try {
+                    startActivity(
+                        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+                    )
+                } catch (e: Exception) {
+                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                }
+            }
+            .setNegativeButton("Not now", null)
+            .setOnDismissListener { askingSomething = false }
+            .show()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // One-time setup prompts, one at a time.
+        if (askingSomething) return
+        if (!Settings.canDrawOverlays(this) && !prefs.getBoolean("askedOverlay", false)) {
+            prefs.edit().putBoolean("askedOverlay", true).apply()
+            askingSomething = true
+            askOverlayPermission()
+        } else if (!batteryExempt() && !prefs.getBoolean("askedBattery", false)) {
+            prefs.edit().putBoolean("askedBattery", true).apply()
+            askBatteryExemption()
+        }
+    }
+
+    /** Looks at the latest GitHub release and offers to download it if it's newer. */
+    private fun checkForUpdate(manual: Boolean = false) {
+        Thread {
+            try {
+                val c = URL("https://api.github.com/repos/Dragonngame/Claude-Android-browser/releases/latest")
+                    .openConnection() as HttpURLConnection
+                c.connectTimeout = 10000
+                c.readTimeout = 10000
+                c.setRequestProperty("Accept", "application/vnd.github+json")
+                val o = JSONObject(c.inputStream.bufferedReader().readText())
+                val tag = o.optString("tag_name")
+                val latest = tag.substringAfterLast('.').toIntOrNull() ?: 0
+                val mine = appVersion().substringAfterLast('.').toIntOrNull() ?: 0
+                val assets = o.optJSONArray("assets")
+                val apk = if (assets != null && assets.length() > 0) assets.getJSONObject(0).optString("browser_download_url") else ""
+                runOnUiThread {
+                    if (latest > mine && apk.isNotEmpty()) {
+                        AlertDialog.Builder(this)
+                            .setTitle("Update available: $tag")
+                            .setMessage(o.optString("body").take(1500))
+                            .setPositiveButton("Download") { _, _ ->
+                                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(apk)))
+                            }
+                            .setNegativeButton("Later", null)
+                            .show()
+                    } else if (manual) {
+                        Toast.makeText(this, "You have the latest version (v${appVersion()})", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                if (manual) runOnUiThread { Toast.makeText(this, "Couldn't check: ${e.message}", Toast.LENGTH_SHORT).show() }
+            }
+        }.start()
     }
 
     private fun webViewParams() = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
@@ -363,6 +473,8 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         if (::webView.isInitialized) moveWebViewBack()
+        val c = controller
+        if (c != null) Thread { c.wake(true) }.start()
     }
 
     override fun onStop() {
@@ -371,6 +483,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacks(idleCheck)
+        AppState.removeListener(stateListener)
         moveWebViewBack()
         tunnel?.stop()
         stopService(Intent(this, KeepAliveService::class.java))

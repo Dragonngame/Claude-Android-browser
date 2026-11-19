@@ -52,9 +52,27 @@ class McpHandler(private val b: BrowserController, private val log: (String) -> 
         val name = p.optString("name")
         val a = p.optJSONObject("arguments") ?: JSONObject()
         val url = a.optString("url")
+        if (AppState.paused) {
+            log("blocked $name (paused)")
+            return textResult(
+                "The user has paused Claude's access to the phone browser. " +
+                    "Ask them to tap Resume in the Remote Browser notification.", true
+            )
+        }
         log(if (url.isNotEmpty()) "$name $url" else name)
+        AppState.busy()
         return try {
-            if (name == "screenshot") {
+            b.wake(name != "open_url")
+            if (name == "get_images" || name == "video_frames") {
+                val (info, imgs) = if (name == "get_images") {
+                    b.getImages(a.optInt("max", 6).coerceIn(1, 12), a.optInt("min_size", 150).coerceIn(50, 2000))
+                } else {
+                    b.videoFrames(a.optInt("count", 6).coerceIn(1, 12))
+                }
+                val content = JSONArray().put(JSONObject().put("type", "text").put("text", info))
+                for (d in imgs) content.put(JSONObject().put("type", "image").put("data", d).put("mimeType", "image/jpeg"))
+                JSONObject().put("content", content).put("isError", false)
+            } else if (name == "screenshot") {
                 val (data, info) = b.screenshot()
                 JSONObject().put(
                     "content", JSONArray()
@@ -63,11 +81,15 @@ class McpHandler(private val b: BrowserController, private val log: (String) -> 
                 ).put("isError", false)
             } else {
                 val out = when (name) {
-                    "open_url" -> b.openUrl(a.getString("url"))
+                    "open_url" -> b.openUrl(a.getString("url"), a.optBoolean("read", true))
                     "get_page" -> b.getPage(
                         a.optInt("offset", 0).coerceAtLeast(0),
-                        a.optInt("max_chars", 12000).coerceIn(500, 50000)
+                        a.optInt("max_chars", 12000).coerceIn(500, 50000),
+                        a.optBoolean("full", false)
                     )
+                    "find_text" -> b.findText(a.getString("query"))
+                    "get_transcript" -> b.getTranscript(a.optString("language", ""))
+                    "set_view" -> b.setView(a.optString("mode", "mobile") == "desktop")
                     "find_elements" -> b.findElements(a.optBoolean("visible_only", false))
                     "click_element" -> b.clickElement(a.getInt("index"))
                     "type_text" -> b.typeText(
@@ -113,17 +135,24 @@ class McpHandler(private val b: BrowserController, private val log: (String) -> 
     private fun toolList(): JSONArray = JSONArray()
         .put(
             tool(
-                "open_url", "Open a web address (or search words) in the phone browser and wait for it to load.",
-                JSONObject().put("url", prop("string", "Full URL, a domain like example.com, or search words")),
+                "open_url",
+                "Open a web address (or search words) in the phone browser, wait for it to load, close cookie/login popups, " +
+                    "and return the start of the page text (so get_page is often not needed).",
+                JSONObject()
+                    .put("url", prop("string", "Full URL, a domain like example.com, or search words"))
+                    .put("read", prop("boolean", "Return the page text (default true)")),
                 listOf("url")
             )
         )
         .put(
             tool(
-                "get_page", "Read the current page's title, URL and visible text. Long pages are split; use offset to read further.",
+                "get_page",
+                "Read the current page's title, URL and text. By default it closes popups, expands 'See more' links " +
+                    "and removes site clutter. Long pages are split; use offset to read further.",
                 JSONObject()
                     .put("offset", prop("integer", "Character offset to start from (default 0)"))
                     .put("max_chars", prop("integer", "Max characters to return (default 12000)"))
+                    .put("full", prop("boolean", "Raw text with nothing removed or expanded (default false)"))
             )
         )
         .put(
@@ -169,6 +198,43 @@ class McpHandler(private val b: BrowserController, private val log: (String) -> 
             )
         )
         .put(tool("screenshot", "Take a screenshot of what the phone browser shows right now."))
+        .put(
+            tool(
+                "get_images",
+                "Get the pictures on the current page (for example the photos in a Facebook post) as images, in page order.",
+                JSONObject()
+                    .put("max", prop("integer", "How many pictures to return (default 6, max 12)"))
+                    .put("min_size", prop("integer", "Skip pictures smaller than this many pixels (default 150)"))
+            )
+        )
+        .put(
+            tool(
+                "video_frames",
+                "Take frames spread evenly across the main video on the page (YouTube, Facebook, Instagram...). " +
+                    "There is no audio; use get_transcript for what is said on YouTube.",
+                JSONObject().put("count", prop("integer", "Number of frames (default 6, max 12)"))
+            )
+        )
+        .put(
+            tool(
+                "get_transcript", "Get the subtitles/transcript of the YouTube video that is open.",
+                JSONObject().put("language", prop("string", "Language code like en or da (default: the video's main subtitles)"))
+            )
+        )
+        .put(
+            tool(
+                "find_text", "Find text on the current page, return each match with context, and scroll to the first one.",
+                JSONObject().put("query", prop("string", "Text to look for")),
+                listOf("query")
+            )
+        )
+        .put(
+            tool(
+                "set_view", "Switch the browser between the phone and desktop version of sites, then reload.",
+                JSONObject().put("mode", JSONObject().put("type", "string").put("enum", JSONArray(listOf("mobile", "desktop")))),
+                listOf("mode")
+            )
+        )
         .put(
             tool(
                 "tap", "Tap a point given in the pixel coordinates of the last screenshot. Use when find_elements can't reach something.",
