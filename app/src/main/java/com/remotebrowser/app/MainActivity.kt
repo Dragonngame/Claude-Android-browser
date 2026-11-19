@@ -8,6 +8,10 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.graphics.Bitmap
+import android.graphics.PixelFormat
+import android.net.Uri
+import android.provider.Settings
+import android.view.Gravity
 import android.os.Bundle
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -32,6 +36,8 @@ class MainActivity : Activity() {
     }
 
     lateinit var webView: WebView
+    private lateinit var root: LinearLayout
+    @Volatile var inOverlay = false
     private lateinit var urlBar: EditText
     private lateinit var statusView: TextView
     private lateinit var logView: TextView
@@ -53,7 +59,7 @@ class MainActivity : Activity() {
         val match = ViewGroup.LayoutParams.MATCH_PARENT
         val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
 
-        val root = LinearLayout(this)
+        root = LinearLayout(this)
         root.orientation = LinearLayout.VERTICAL
         root.fitsSystemWindows = true
 
@@ -101,6 +107,10 @@ class MainActivity : Activity() {
         startServer()
         startKeepAlive()
         startTunnel()
+        if (!Settings.canDrawOverlays(this) && !prefs.getBoolean("askedOverlay", false)) {
+            prefs.edit().putBoolean("askedOverlay", true).apply()
+            askOverlayPermission()
+        }
         webView.loadUrl("https://www.google.com")
     }
 
@@ -235,7 +245,7 @@ class MainActivity : Activity() {
     private fun showMore() {
         AlertDialog.Builder(this)
             .setTitle("More")
-            .setItems(arrayOf("Make a new secret key", "Restart tunnel", "Stop and close the app")) { _, which ->
+            .setItems(arrayOf("Make a new secret key", "Restart tunnel", "Stop and close the app", "Allow background mode (display over other apps)")) { _, which ->
                 when (which) {
                     0 -> {
                         prefs.edit().remove("secret").apply()
@@ -244,6 +254,7 @@ class MainActivity : Activity() {
                     }
                     1 -> startTunnel()
                     2 -> finishAndRemoveTask()
+                    3 -> askOverlayPermission()
                 }
             }
             .show()
@@ -294,7 +305,73 @@ class MainActivity : Activity() {
         updateStatus()
     }
 
+    private fun askOverlayPermission() {
+        AlertDialog.Builder(this)
+            .setTitle("Background mode")
+            .setMessage(
+                "To let Claude see and tap pages while you're in another app, allow Remote Browser to " +
+                    "\"display over other apps\". The browser then keeps running in an invisible window " +
+                    "that doesn't block your screen or taps."
+            )
+            .setPositiveButton("Open settings") { _, _ ->
+                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            }
+            .setNegativeButton("Not now", null)
+            .show()
+    }
+
+    private fun webViewParams() = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+
+    // When the app goes to the background, move the browser into an invisible overlay window
+    // so Android keeps drawing it: screenshots and taps keep working.
+    private fun moveWebViewToOverlay() {
+        if (inOverlay || !Settings.canDrawOverlays(this)) return
+        val wm = applicationContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val dm = resources.displayMetrics
+        val w = if (webView.width > 0) webView.width else dm.widthPixels
+        val h = if (webView.height > 0) webView.height else dm.heightPixels
+        val lp = WindowManager.LayoutParams(
+            w, h,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        )
+        lp.gravity = Gravity.TOP or Gravity.START
+        lp.alpha = 0f
+        try {
+            root.removeView(webView)
+            wm.addView(webView, lp)
+            inOverlay = true
+        } catch (e: Exception) {
+            if (webView.parent == null) root.addView(webView, webViewParams())
+        }
+    }
+
+    private fun moveWebViewBack() {
+        if (!inOverlay) return
+        val wm = applicationContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        try {
+            wm.removeViewImmediate(webView)
+        } catch (e: Exception) {
+        }
+        inOverlay = false
+        if (webView.parent == null) root.addView(webView, webViewParams())
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (::webView.isInitialized) moveWebViewBack()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (!isFinishing && ::webView.isInitialized) moveWebViewToOverlay()
+    }
+
     override fun onDestroy() {
+        moveWebViewBack()
         tunnel?.stop()
         stopService(Intent(this, KeepAliveService::class.java))
         server?.shutdown()

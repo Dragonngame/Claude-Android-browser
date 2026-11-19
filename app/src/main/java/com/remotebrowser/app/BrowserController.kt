@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -296,11 +297,27 @@ class BrowserController(private val act: MainActivity) {
             val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             val loc = IntArray(2)
             wv.getLocationInWindow(loc)
+            val rect = Rect(loc[0], loc[1], loc[0] + w, loc[1] + h)
             try {
-                PixelCopy.request(act.window, Rect(loc[0], loc[1], loc[0] + w, loc[1] + h), b, { res ->
-                    if (res != PixelCopy.SUCCESS) drawInto(b)
+                if (Build.VERSION.SDK_INT >= 34) {
+                    // Copies from whichever window the browser is in (the app or the background overlay).
+                    val req = PixelCopy.Request.Builder.ofWindow(wv)
+                        .setSourceRect(rect)
+                        .setDestinationBitmap(b)
+                        .build()
+                    PixelCopy.request(req, { r -> main.post(r) }, { result ->
+                        if (result.status != PixelCopy.SUCCESS) drawInto(b)
+                        f.complete(b)
+                    })
+                } else if (act.inOverlay) {
+                    drawInto(b)
                     f.complete(b)
-                }, main)
+                } else {
+                    PixelCopy.request(act.window, rect, b, { res ->
+                        if (res != PixelCopy.SUCCESS) drawInto(b)
+                        f.complete(b)
+                    }, main)
+                }
             } catch (e: Exception) {
                 drawInto(b)
                 f.complete(b)
