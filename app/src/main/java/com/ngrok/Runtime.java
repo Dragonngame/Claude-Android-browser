@@ -13,7 +13,7 @@ import java.util.Locale;
 /**
  * A class representing the runtime environment for the ngrok Java client.
  */
-class Runtime {
+public class Runtime {
     private static final Logger LOGGER = new Logger();
 
     /**
@@ -54,6 +54,21 @@ class Runtime {
     public static void load() {
         // Android: the library ships in the APK's lib/arm64-v8a folder (see app/build.gradle.kts).
         System.loadLibrary("ngrok_java");
+    }
+
+    /** App addition: retries native start-up and reports the real error instead of hiding it. */
+    public static String diagnose() {
+        try {
+            System.loadLibrary("ngrok_java");
+        } catch (Throwable t) {
+            return "load failed: " + t;
+        }
+        try {
+            init(getLogger());
+            return "ok";
+        } catch (Throwable t) {
+            return "init failed: " + t;
+        }
     }
 
     /**

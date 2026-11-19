@@ -32,7 +32,11 @@ class Tunnel(private val onStatus: (String) -> Unit) {
                     f.join() // blocks while the tunnel is up
                     if (running) onStatus("Tunnel dropped, reconnecting...")
                 } catch (e: Throwable) {
-                    if (running) onStatus("Tunnel error: " + (e.message ?: e.toString()) + " (retrying)")
+                    var msg = e.message ?: e.toString()
+                    if (msg.contains("runtime not initialized")) {
+                        msg = "ngrok start-up: " + com.ngrok.Runtime.diagnose()
+                    }
+                    if (running) onStatus("Tunnel error: $msg (retrying)")
                 }
                 closeQuietly()
                 if (running) {
