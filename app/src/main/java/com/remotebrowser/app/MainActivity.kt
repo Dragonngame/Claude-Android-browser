@@ -46,6 +46,7 @@ class MainActivity : Activity() {
     lateinit var webView: WebView
     private lateinit var root: LinearLayout
     @Volatile var inOverlay = false
+    @Volatile var desktopNow = false
     private lateinit var urlBar: EditText
     private lateinit var statusView: TextView
     private lateinit var logView: TextView
@@ -141,6 +142,10 @@ class MainActivity : Activity() {
         s.javaScriptCanOpenWindowsAutomatically = true
         s.setSupportMultipleWindows(false)
         s.mediaPlaybackRequiresUserGesture = false
+        if (AppState.desktopDefault) {
+            s.userAgentString = DESKTOP_UA
+            desktopNow = true
+        }
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
 
@@ -274,7 +279,11 @@ class MainActivity : Activity() {
                     if (AppState.paused) "Resume Claude" else "Pause Claude",
                     "Make a new secret key", "Restart tunnel", "Stop and close the app",
                     "Allow background mode (display over other apps)", "Battery settings for this app",
-                    "Check for updates"
+                    "Check for updates",
+                    "Activity log",
+                    "Blocked sites",
+                    if (AppState.allowRunJs) "Turn off run_js (advanced)" else "Allow run_js (advanced)",
+                    "Default site version: " + (if (AppState.desktopDefault) "desktop (tap for phone)" else "phone (tap for desktop)")
                 )) { _, which ->
                 when (which) {
                     0 -> AppState.setPaused(!AppState.paused)
@@ -288,6 +297,20 @@ class MainActivity : Activity() {
                     4 -> askOverlayPermission()
                     5 -> askBatteryExemption()
                     6 -> checkForUpdate(true)
+                    7 -> showLog()
+                    8 -> editBlocked()
+                    9 -> {
+                        prefs.edit().putBoolean("allowRunJs", !AppState.allowRunJs).apply()
+                        Toast.makeText(this, if (AppState.allowRunJs) "run_js is on" else "run_js is off", Toast.LENGTH_SHORT).show()
+                    }
+                    10 -> {
+                        val d = !AppState.desktopDefault
+                        prefs.edit().putBoolean("desktopDefault", d).apply()
+                        webView.settings.userAgentString = if (d) DESKTOP_UA else null
+                        desktopNow = d
+                        webView.reload()
+                        Toast.makeText(this, if (d) "Desktop version by default" else "Phone version by default", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
             .show()
@@ -355,6 +378,37 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun showLog() {
+        val tv = TextView(this)
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        tv.setPadding(pad, pad / 2, pad, pad / 2)
+        tv.textSize = 12f
+        tv.setTextIsSelectable(true)
+        tv.text = AppState.logText()
+        val sv = android.widget.ScrollView(this)
+        sv.addView(tv)
+        AlertDialog.Builder(this)
+            .setTitle("Activity log (newest first)")
+            .setView(sv)
+            .setPositiveButton("Close", null)
+            .show()
+    }
+
+    private fun editBlocked() {
+        val input = EditText(this)
+        input.setText(prefs.getString("blockedSites", null) ?: AppState.DEFAULT_BLOCKED)
+        input.textSize = 13f
+        input.minLines = 6
+        AlertDialog.Builder(this)
+            .setTitle("Blocked sites")
+            .setMessage("Claude can't open or stay on these sites (one per line, subdomains included).")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ -> prefs.edit().putString("blockedSites", input.text.toString()).apply() }
+            .setNeutralButton("Reset to default") { _, _ -> prefs.edit().remove("blockedSites").apply() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun batteryExempt(): Boolean =
         (getSystemService(Context.POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(packageName)
 
@@ -397,6 +451,9 @@ class MainActivity : Activity() {
 
     /** Looks at the latest GitHub release and offers to download it if it's newer. */
     private fun checkForUpdate(manual: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!manual && now - prefs.getLong("lastUpdateCheck", 0L) < 60 * 60_000L) return
+        prefs.edit().putLong("lastUpdateCheck", now).apply()
         Thread {
             try {
                 val c = URL("https://api.github.com/repos/Dragonngame/Claude-Android-browser/releases/latest")
@@ -475,6 +532,7 @@ class MainActivity : Activity() {
         if (::webView.isInitialized) moveWebViewBack()
         val c = controller
         if (c != null) Thread { c.wake(true) }.start()
+        if (c != null) checkForUpdate()
     }
 
     override fun onStop() {

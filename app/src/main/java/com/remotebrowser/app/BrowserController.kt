@@ -697,6 +697,7 @@ class BrowserController(private val act: MainActivity) {
     fun setView(desktop: Boolean): String {
         uiRun {
             act.webView.settings.userAgentString = if (desktop) DESKTOP_UA else null
+            act.desktopNow = desktop
             act.loading = true
             act.webView.reload()
         }
@@ -708,11 +709,20 @@ class BrowserController(private val act: MainActivity) {
     @Volatile private var frozen = false
     @Volatile private var unloadedUrl: String? = null
 
-    /** Called by the idle checker: freeze the page after 1 min idle, unload it after 15 min (only while in the background). */
+    /** If the current page is on the blocked list, replace it with a blank page. */
+    fun leaveIfBlocked(): Boolean {
+        val url = uiRun { act.webView.url }
+        if (!AppState.isBlocked(url)) return false
+        uiRun { act.webView.loadUrl("about:blank") }
+        AppState.addLog("  closed blocked site")
+        return true
+    }
+
+    /** Called by the idle checker: freeze the page after 1 min idle and close it after 2 min (only while in the background). */
     fun idleTick() {
         val idle = System.currentTimeMillis() - AppState.lastRequest
         if (!act.inOverlay) return
-        if (idle > 15 * 60_000L && unloadedUrl == null) {
+        if (idle > 2 * 60_000L && unloadedUrl == null) {
             main.post {
                 val url = act.webView.url
                 if (url != null && url != "about:blank") {

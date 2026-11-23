@@ -17,18 +17,22 @@ android {
         versionName = "1.$buildNumber"
     }
 
-    // Fixed signing key, so new builds install over old ones without losing logins.
+    // Signing key: app/release.keystore is public but protected by a strong password that only exists
+    // as the GitHub secret KEYSTORE_PASSWORD (passed in with -PkeystorePassword=...).
+    val ksPassword = (project.findProperty("keystorePassword") as String?)?.takeIf { it.isNotBlank() }
     signingConfigs {
-        getByName("debug") {
-            storeFile = file("debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+        create("private") {
+            storeFile = file("release.keystore")
+            storePassword = ksPassword ?: ""
+            keyAlias = "remotebrowser"
+            keyPassword = ksPassword ?: ""
         }
     }
     buildTypes {
         getByName("debug") {
-            signingConfig = signingConfigs.getByName("debug")
+            if (ksPassword != null) {
+                signingConfig = signingConfigs.getByName("private")
+            }
         }
     }
 

@@ -59,7 +59,18 @@ class McpHandler(private val b: BrowserController, private val log: (String) -> 
                     "Ask them to tap Resume in the Remote Browser notification.", true
             )
         }
-        log(if (url.isNotEmpty()) "$name $url" else name)
+        val label = if (url.isNotEmpty()) "$name $url" else name
+        log(label)
+        AppState.addLog(label)
+        if (name == "run_js" && !AppState.allowRunJs) {
+            return textResult(
+                "run_js is turned off for safety. The user can turn it on in Remote Browser: Setup > More > Allow run_js.", true
+            )
+        }
+        if (name == "open_url" && AppState.isBlocked(normalizeUrl(url))) {
+            AppState.addLog("  refused: blocked site")
+            return textResult("That site is on the user's blocked list (Setup > More > Blocked sites), so it can't be opened.", true)
+        }
         AppState.busy()
         return try {
             b.wake(name != "open_url")
@@ -109,7 +120,11 @@ class McpHandler(private val b: BrowserController, private val log: (String) -> 
                     "wait" -> b.waitSeconds(a.optDouble("seconds", 2.0))
                     else -> throw IllegalArgumentException("Unknown tool: $name")
                 }
-                textResult(out, false)
+                if (b.leaveIfBlocked()) {
+                    textResult("The page went to a site on the user's blocked list, so it was closed.", true)
+                } else {
+                    textResult(out, false)
+                }
             }
         } catch (e: TimeoutException) {
             textResult("Timed out. The Remote Browser app has to be open on the phone's screen.", true)

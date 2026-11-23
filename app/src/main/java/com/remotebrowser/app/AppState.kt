@@ -18,12 +18,48 @@ object AppState {
     @Volatile var lastRequest = 0L
 
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
+    private val logLines = java.util.ArrayDeque<String>()
+    private var prefs: android.content.SharedPreferences? = null
+
+    /** Settings the user controls (Setup > More). */
+    val allowRunJs: Boolean get() = prefs?.getBoolean("allowRunJs", false) ?: false
+    val desktopDefault: Boolean get() = prefs?.getBoolean("desktopDefault", false) ?: false
+    val blockedSites: List<String>
+        get() = (prefs?.getString("blockedSites", null) ?: DEFAULT_BLOCKED)
+            .split('\n', ',', ' ').map { it.trim().lowercase().removePrefix("https://").removePrefix("http://").trimEnd('/') }
+            .filter { it.isNotEmpty() }
+
+    const val DEFAULT_BLOCKED =
+        "mitid.dk\nborger.dk\nskat.dk\ne-boks.dk\nmit.dk\nsundhed.dk\nnetbank.dk\ndanskebank.dk\nnordea.dk\n" +
+            "jyskebank.dk\nsydbank.dk\nspks.dk\narbejdernes.dk\nlunar.app\nrevolut.com\npaypal.com\nmobilepay.dk\n" +
+            "mail.google.com\naccounts.google.com\noutlook.live.com\noutlook.office.com\nmail.yahoo.com"
+
+    fun isBlocked(url: String?): Boolean {
+        if (url == null) return false
+        val host = try {
+            android.net.Uri.parse(if (url.contains("://")) url else "https://$url").host?.lowercase() ?: return false
+        } catch (e: Exception) {
+            return false
+        }
+        return blockedSites.any { host == it || host.endsWith(".$it") }
+    }
+
+    fun addLog(line: String) {
+        val t = java.text.SimpleDateFormat("dd/MM HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+        synchronized(logLines) {
+            logLines.addFirst("$t  $line")
+            while (logLines.size > 300) logLines.removeLast()
+        }
+    }
+
+    fun logText(): String = synchronized(logLines) { if (logLines.isEmpty()) "Nothing yet." else logLines.joinToString("\n") }
     private val handler = Handler(Looper.getMainLooper())
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private val releaseTask = Runnable { releaseLocks() }
 
     fun init(ctx: Context) {
+        if (prefs == null) prefs = ctx.applicationContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
         if (wakeLock != null) return
         val app = ctx.applicationContext
         val pm = app.getSystemService(Context.POWER_SERVICE) as PowerManager
