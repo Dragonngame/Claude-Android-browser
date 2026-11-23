@@ -27,11 +27,26 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Build APK
+      - name: Create the signing key on the first build
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
           if [ -z "$KEYSTORE_PASSWORD" ]; then echo "::error::Add the KEYSTORE_PASSWORD secret (Settings > Secrets and variables > Actions)"; exit 1; fi
+          if [ ! -f app/release.keystore ]; then
+            keytool -genkeypair -keystore app/release.keystore -storetype PKCS12 \
+              -storepass "$KEYSTORE_PASSWORD" -keypass "$KEYSTORE_PASSWORD" -alias remotebrowser \
+              -keyalg RSA -keysize 3072 -validity 15000 -dname "CN=Remote Browser"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add app/release.keystore
+            git commit -m "Add signing key (password-protected) [skip ci]"
+            git push
+          fi
+
+      - name: Build APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
           gradle assembleDebug --no-daemon --stacktrace -PbuildNumber=${{ github.run_number }} -PkeystorePassword="$KEYSTORE_PASSWORD"
           cp app/build/outputs/apk/debug/app-debug.apk RemoteBrowser-v1.${{ github.run_number }}.apk
 
